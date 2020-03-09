@@ -1,45 +1,199 @@
 from pyspark import SparkContext
 from pyspark import SparkConf
+import itertools
+import time
 from sys import argv
-import json
-
-input_file = argv[1]
-output_file = open(argv[2], "w", encoding='utf-8')
-
-def date(line):
-    if "2018" in line[-1]:
-        return 1
-def user_id(line):
-    return line[1][11:-1]
-def bussiness_id(line):
-    return line[2][15:-1]
-def add(a,b):
-    return a+b
+start = time.time()
+CASE = 1
+SUPPORT = 4
+input_file = "test_data.csv"
+output_file = "junyu_liu_task1.txt"
+# CASE = int(argv[1])
+# SUPPORT = int(argv[2])
+# input_file = argv[3]
+# output_file = argv[4]
+support = int(SUPPORT/2)
+def strip_header(line):
+    if "user_id,business_id" not in line:
+        return line
 def swap(x):
     return (x[1], x[0])
-
+def update_frequent_single(sure_frequent):
+    updated = set()
+    for a_tuple in sure_frequent:
+        for elem in a_tuple:
+            updated.add(elem)
+    return updated
+def check_frequent_in_last_layer(a_tuple, last_layer, last_layer_length):
+    a_tuple = list(a_tuple)
+    subtuples = list(itertools.combinations(a_tuple, last_layer_length))
+    for subtuple in subtuples:
+        # print("subtuple: ",end="")
+        # print(subtuple)
+        if last_layer_length == 1:
+            if subtuple[0] not in last_layer:
+                return False
+        else:
+            if subtuple not in last_layer:
+                return False
+    # print("return1 True")
+    return True
+def check_frequent_in_partition_list(a_tuple, partition_lists):
+    count = 0
+    for basket in partition_lists:
+        flag = True
+        for number in a_tuple:
+            if number not in basket:
+                flag = False
+                break
+        # print("flag is: ", end="")
+        # print(flag)
+        if flag:
+            count += 1
+    if count >= support:
+        # print("filter2 True")
+        return True
+    else:
+        return False
+def find_candidates(iterater):
+    partition_list = [x[1] for x in iterater]
+    count_single = dict()
+    largest_busket_len = 0
+    frequent_single = set()
+    candidates = dict()
+    #counts how many times a number in this chunk
+    for a_list in partition_list:
+        if len(a_list) > largest_busket_len:
+            largest_busket_len = len(a_list)
+        for num in a_list:
+            if num not in count_single:
+                count_single[num] = 1
+            else:
+                count_single[num] += 1
+    #find frequent_single
+    for key, value in count_single.items():
+        if value >= support:
+            frequent_single.add(key)
+    candidates[1] = frequent_single
+    #for each length in this partition iterate through all the basket to make combinations and find the candidates
+    current_length_frequent_single_filter = sorted(frequent_single)
+    for item_length in range(2, largest_busket_len + 1):
+        count_item = dict()
+        for basket in partition_list:
+            current_basket_frequent_single = set()
+            for num in basket:
+                if num in current_length_frequent_single_filter:
+                    current_basket_frequent_single.add(num)
+            #generate the combination for finding cadidates for each basket
+            item = list(itertools.combinations(sorted(current_basket_frequent_single), item_length))
+            for a_tuple in item:
+                #condition 1: check the last layer, if every subtuple are frequent
+                if check_frequent_in_last_layer(a_tuple, candidates[item_length-1], item_length-1):# a_tuple in candidates[int(item_length)-1]:
+                    if a_tuple in count_item:
+                        count_item[a_tuple] += 1
+                    else:
+                        count_item[a_tuple] = 1
+        sure_frequent = set()
+        for item, item_support in count_item.items():
+            if item_support >= support:
+                sure_frequent.add(item)
+        if len(sure_frequent) > 0:
+            #filter frequent single preparing for next length
+            current_length_frequent_single_filter = update_frequent_single(sure_frequent)
+            candidates[item_length] = sure_frequent
+        else:
+            break
+    # print("candidates: ",end="")
+    # print(candidates)
+    output = set()
+    if len(candidates[1]) > 0:
+        for key in candidates:
+            output |= candidates[key]
+        yield output
+def find_frequent_itemset(iterater, candidates):
+    output = []
+    for candidate in candidates:
+        if type(candidate) is str:
+            if candidate in iterater[1]:
+                output.append((candidate, 1))
+        elif type(candidate) is tuple:
+            flag = True
+            for num in candidate:
+                if num not in iterater[1]:
+                    flag = False
+                    break
+            if flag:
+                output.append((candidate, 1))
+    return output
+def output_txt(output_file, candidates, itemsets):
+    with open(output_file, "w", encoding='utf-8') as output:
+        candidates_dict = {1: set()}
+        itemsets_dict = {1: set()}
+        for candidate in candidates:
+            if type(candidate) is str:
+                candidates_dict[1].add(candidate)
+            else:
+                if len(candidate) in candidates_dict:
+                    candidates_dict[len(candidate)].add(candidate)
+                else:
+                    candidates_dict[len(candidate)] = set()
+                    candidates_dict[len(candidate)].add(candidate)
+        for itemset in itemsets:
+            if type(itemset) is str:
+                itemsets_dict[1].add(itemset)
+            else:
+                if len(itemset) in itemsets_dict:
+                    itemsets_dict[len(itemset)].add(itemset)
+                else:
+                    itemsets_dict[len(itemset)] = set()
+                    itemsets_dict[len(itemset)].add(itemset)
+        output.write("Candidates:\n")
+        for length in range(1, max(set(candidates_dict.keys()))+1):
+            if length == 1:
+                for elem in sorted(list(candidates_dict[length])):
+                    if elem != sorted(list(candidates_dict[length]))[-1]:
+                        output.write("('" + elem + "')" + ",")
+                    else:
+                        output.write("('" + elem + "')")
+            else:
+                output.write(str(sorted(list(candidates_dict[length]))).replace("[", "").replace("]", "").replace("), (", "),("))
+            output.write("\n\n")
+        output.write("Frequent Itemsets:\n")
+        for length in range(1, max(set(itemsets_dict.keys()))+1):
+            if length == 1:
+                for elem in sorted(list(itemsets_dict[length])):
+                    if elem != sorted(list(itemsets_dict[length]))[-1]:
+                        output.write("('" + elem + "')" + ",")
+                    else:
+                        output.write("('" + elem + "')")
+            else:
+                output.write(str(sorted(list(itemsets_dict[length]))).replace("[", "").replace("]", "").replace("), (", "),("))
+            output.write("\n\n")
+    output.close()
 sc = SparkContext("local[*]")
 sf = SparkConf()
 sf.set("spark.executor.memory", "4g")
-review = sc.textFile(input_file).coalesce(12)
+small = sc.textFile(input_file).repartition(2)
+small_split = small.filter(strip_header).map(lambda s: s.strip()).map(lambda s: s.split(","))
+if CASE == 1:
+    case1_pre = small_split.groupByKey().map(lambda x: [x[0], set(x[1])])
+    case1_candidate = case1_pre.mapPartitions(find_candidates).flatMap(lambda x: x).distinct().collect()
+    case1_itemset = case1_pre.map(lambda x: find_frequent_itemset(x, case1_candidate)).flatMap(lambda x: x)\
+        .reduceByKey(lambda a, b: a+b).filter(lambda x: x[1] >= SUPPORT).map(lambda x: x[0])
+    #print(case1_pre.collect())
+    #print(case1_candidate)
+    #print(case1_itemset.collect())
+    output_txt(output_file, case1_candidate, case1_itemset.collect())
 
-output = dict()
-#A
-output["n_review"] = review.count()
-#B
-review_strip = review.map(lambda s: s.strip("{}"))
-review_split = review_strip.map(lambda s: s.split(","))
-output["n_review_2018"] = review_split.filter(date).count()
-#C
-output["n_user"] = review_split.map(user_id).distinct().count()
-#D
-output["top10_user"] = review_split.map(user_id).map(lambda x: [x, 1]).reduceByKey(add).sortByKey(True).map(swap).sortByKey(False).map(swap).take(10)
-#E
-output["n_business"] = review_split.map(bussiness_id).distinct().count()
-#F
-output["top10_business"] = review_split.map(bussiness_id).map(lambda x: [x, 1]).reduceByKey(add).sortByKey(True).map(swap).sortByKey(False).map(swap).take(10)
+if CASE == 2:
+    case2_pre = small_split.map(swap).groupByKey().map(lambda x: [x[0], set(x[1])])
+    case2_candidate = case2_pre.mapPartitions(find_candidates).flatMap(lambda x: x).distinct().collect()
+    case2_itemset = case2_pre.map(lambda x: find_frequent_itemset(x, case2_candidate)).flatMap(lambda x: x)\
+        .reduceByKey(lambda a, b: a+b).filter(lambda x: x[1] >= SUPPORT).map(lambda x: x[0])
+    #print(case2_itemset.collect())
+    output_txt(output_file, case2_candidate, case2_itemset.collect())
 
-print(output)
-# with open('task1.json', 'w') as outfile:
-json.dump(output, output_file)
-output_file.close()
+end = time.time()
+whole_time = end - start
+print("Duration: " + str(whole_time))
+
